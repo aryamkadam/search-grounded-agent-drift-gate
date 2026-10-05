@@ -1,6 +1,15 @@
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-import re
 from typing import Any
+
+from .identity import (
+    canonicalize_url,
+    identity_for_ai_reference,
+    identity_for_inline_image,
+    identity_for_inline_video,
+    identity_for_organic,
+    identity_for_perspective,
+    identity_for_related_question,
+    normalize_text,
+)
 
 from .schema import (
     AIOverviewEvidence,
@@ -14,16 +23,6 @@ from .schema import (
     RelatedQuestionEvidence,
     SurfaceState,
 )
-
-
-TRACKING_PARAMETERS = {
-    "gclid",
-    "fbclid",
-    "msclkid",
-    "ref",
-}
-
-
 KNOWN_SURFACES = (
     "organic_results",
     "news_results",
@@ -38,99 +37,6 @@ KNOWN_SURFACES = (
     "inline_videos",
 )
 
-
-def normalize_text(value: Any) -> str | None:
-    if value is None:
-        return None
-
-    text = str(value)
-
-    text = re.sub(r"\s+", " ", text).strip()
-
-    return text or None
-
-
-def canonicalize_url(value: Any) -> str | None:
-    """
-    Normalize a URL for evidence identity.
-
-    This intentionally performs only conservative normalization.
-    Meaningful query parameters are preserved.
-    """
-    if not value or not isinstance(value, str):
-        return None
-
-    value = value.strip()
-
-    try:
-        parts = urlsplit(value)
-
-        if not parts.scheme or not parts.netloc:
-            return value.rstrip("/")
-
-        scheme = parts.scheme.lower()
-        hostname = (parts.hostname or "").lower()
-
-        netloc = hostname
-
-        if parts.port:
-            default_port = (
-                (scheme == "http" and parts.port == 80)
-                or (scheme == "https" and parts.port == 443)
-            )
-
-            if not default_port:
-                netloc = f"{hostname}:{parts.port}"
-
-        path = parts.path or "/"
-
-        if path != "/":
-            path = path.rstrip("/")
-
-        query_pairs = [
-            (key, val)
-            for key, val in parse_qsl(
-                parts.query,
-                keep_blank_values=True,
-            )
-            if key.lower() not in TRACKING_PARAMETERS
-            and not key.lower().startswith("utm_")
-        ]
-
-        query_pairs.sort()
-
-        query = urlencode(query_pairs, doseq=True)
-
-        return urlunsplit(
-            (
-                scheme,
-                netloc,
-                path,
-                query,
-                "",
-            )
-        )
-
-    except ValueError:
-        return value.rstrip("/")
-
-
-def make_identity(
-    *,
-    url: Any = None,
-    fallback: Any = None,
-) -> str:
-    canonical_url = canonicalize_url(url)
-
-    if canonical_url:
-        return f"url:{canonical_url}"
-
-    normalized_fallback = normalize_text(fallback)
-
-    if normalized_fallback:
-        return f"text:{normalized_fallback.lower()}"
-
-    return "unknown"
 
 
 def surface_state(
@@ -188,9 +94,9 @@ def normalize_organic(
     for result in results:
         normalized.append(
             OrganicEvidence(
-                identity_key=make_identity(
-                    url=result.get("link"),
-                    fallback=result.get("title"),
+                identity_key=identity_for_organic(
+                    result.get("link"),
+                    title=result.get("title"),
                 ),
                 position=result.get("position"),
                 title=normalize_text(result.get("title")),
@@ -250,9 +156,9 @@ def normalize_ai_overview(
     for reference in value.get("references", []):
         references.append(
             AIOverviewReference(
-                identity_key=make_identity(
-                    url=reference.get("link"),
-                    fallback=reference.get("title"),
+                identity_key=identity_for_ai_reference(
+                    reference.get("link"),
+                    title=reference.get("title"),
                 ),
                 reference_index=reference["index"],
                 title=normalize_text(
@@ -305,9 +211,9 @@ def normalize_perspectives(
     for result in results:
         normalized.append(
             PerspectiveEvidence(
-                identity_key=make_identity(
-                    url=result.get("link"),
-                    fallback=result.get("title"),
+                identity_key=identity_for_perspective(
+                    result.get("link"),
+                    title=result.get("title"),
                 ),
                 author=normalize_text(result.get("author")),
                 source=normalize_text(result.get("source")),
@@ -331,8 +237,8 @@ def normalize_related_questions(
 
         normalized.append(
             RelatedQuestionEvidence(
-                identity_key=make_identity(
-                    fallback=question
+                identity_key=identity_for_related_question(
+                    question
                 ),
                 question=question,
                 question_type=normalize_text(
@@ -356,13 +262,11 @@ def normalize_inline_images(
     normalized = []
 
     for result in results:
-        identity = make_identity(
-            url=(
-                result.get("original")
-                or result.get("source")
-                or result.get("thumbnail")
-            ),
-            fallback=result.get("title"),
+        identity = identity_for_inline_image(
+            original_url=result.get("original"),
+            source_url=result.get("source"),
+            thumbnail_url=result.get("thumbnail"),
+            title=result.get("title"),
         )
 
         normalized.append(
@@ -395,9 +299,9 @@ def normalize_inline_videos(
     for result in results:
         normalized.append(
             InlineVideoEvidence(
-                identity_key=make_identity(
-                    url=result.get("link"),
-                    fallback=result.get("title"),
+                identity_key=identity_for_inline_video(
+                    result.get("link"),
+                    title=result.get("title"),
                 ),
                 position=result.get("position"),
                 title=normalize_text(result.get("title")),
