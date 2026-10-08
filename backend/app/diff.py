@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from .schema import (
     AIOverviewEvidence,
@@ -66,12 +66,16 @@ class EvidenceDiff(BaseModel):
     total_modified: int = 0
     total_surface_state_changes: int = 0
 
+    @computed_field
     @property
     def has_changes(self) -> bool:
-        return any(
-            surface.changes
-            for surface in self.surface_diffs.values()
-        )
+        return any((
+            self.total_added,
+            self.total_removed,
+            self.total_modified,
+            self.total_surface_state_changes,
+            *(surface.changes for surface in self.surface_diffs.values()),
+        ))
 
 
 def _dump(

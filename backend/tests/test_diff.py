@@ -1,4 +1,4 @@
-from backend.app.diff import compare_evidence
+from backend.app.diff import EvidenceDiff, compare_evidence
 from backend.app.schema import (
     AIOverviewEvidence,
     AIOverviewReference,
@@ -328,3 +328,12 @@ def test_surface_missing_to_present_empty_is_detected():
 
     assert state_change.before["state"] == "missing"
     assert state_change.after["state"] == "present_empty"
+
+
+def test_has_changes_is_serialized_for_aggregate_changes():
+    result = EvidenceDiff(total_removed=1)
+
+    payload = result.model_dump()
+
+    assert result.has_changes is True
+    assert payload["has_changes"] is True
