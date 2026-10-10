@@ -1,5 +1,5 @@
 
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -18,6 +18,12 @@ from .evaluation import (
     DriftEvaluationRequest,
     DriftEvaluationResponse,
     evaluate_capture_drift,
+)
+from .evaluation_repository import (
+    EvaluationConflictError,
+    EvaluationIntegrityError,
+    EvaluationRecord,
+    SQLiteEvaluationRepository,
 )
 from .schema import Capture
 from .serpapi_client import SerpApiError, search_google
@@ -74,9 +80,16 @@ class CaptureCreateResponse(BaseModel):
 
 @lru_cache(maxsize=1)
 def get_capture_repository() -> SQLiteCaptureRepository:
-    """Return the process-wide repository using a stable database path."""
+    """Return the process-wide capture repository."""
 
     return SQLiteCaptureRepository(DATABASE_PATH)
+
+
+@lru_cache(maxsize=1)
+def get_evaluation_repository() -> SQLiteEvaluationRepository:
+    """Return the process-wide evaluation repository."""
+
+    return SQLiteEvaluationRepository(DATABASE_PATH)
 
 
 @app.get("/health")
@@ -179,11 +192,15 @@ def get_capture_endpoint(
 def create_persisted_evaluation(
     request: PersistedEvaluationRequest,
     repository: SQLiteCaptureRepository = Depends(get_capture_repository),
+    evaluation_repository: SQLiteEvaluationRepository = Depends(
+        get_evaluation_repository
+    ),
 ) -> DriftEvaluationResponse:
-    """Evaluate drift using two previously stored captures."""
+    """Evaluate stored captures and persist the immutable result."""
 
     try:
         baseline_capture = repository.get(request.baseline_capture_id)
+        current_capture = repository.get(request.current_capture_id)
     except CaptureIntegrityError as exc:
         raise HTTPException(
             status_code=500,
@@ -196,14 +213,6 @@ def create_persisted_evaluation(
             detail="Baseline capture not found.",
         )
 
-    try:
-        current_capture = repository.get(request.current_capture_id)
-    except CaptureIntegrityError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="Stored capture integrity verification failed.",
-        ) from exc
-
     if current_capture is None:
         raise HTTPException(
             status_code=404,
@@ -215,8 +224,61 @@ def create_persisted_evaluation(
         current_capture=current_capture,
         agent_answer=request.agent_answer,
     )
+    response = evaluate_capture_drift(evaluation_request)
 
-    return evaluate_capture_drift(evaluation_request)
+    record = EvaluationRecord(
+        evaluation_id=response.evaluation_id,
+        created_at=datetime.now(timezone.utc),
+        baseline_capture_id=baseline_capture.capture_id,
+        current_capture_id=current_capture.capture_id,
+        agent_answer=request.agent_answer,
+        response=response,
+    )
+
+    try:
+        saved_record = evaluation_repository.save(record)
+    except EvaluationConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Evaluation ID conflicts with existing content.",
+        ) from exc
+    except EvaluationIntegrityError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Stored evaluation integrity verification failed.",
+        ) from exc
+
+    # Preserve the existing endpoint's response contract.
+    return saved_record.response
+
+
+@app.get(
+    "/v1/evaluations/{evaluation_id}",
+    response_model=EvaluationRecord,
+)
+def get_evaluation_endpoint(
+    evaluation_id: str,
+    repository: SQLiteEvaluationRepository = Depends(
+        get_evaluation_repository
+    ),
+) -> EvaluationRecord:
+    """Retrieve a historical evaluation after integrity verification."""
+
+    try:
+        record = repository.get(evaluation_id)
+    except EvaluationIntegrityError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Stored evaluation integrity verification failed.",
+        ) from exc
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Evaluation not found.",
+        )
+
+    return record
 
 
 @app.post(

@@ -1,3 +1,5 @@
+﻿import json
+import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -5,7 +7,12 @@ from fastapi.testclient import TestClient
 
 from backend.app.capture import create_capture
 from backend.app.capture_repository import SQLiteCaptureRepository
-from backend.app.main import app, get_capture_repository
+from backend.app.evaluation_repository import SQLiteEvaluationRepository
+from backend.app.main import (
+    app,
+    get_capture_repository,
+    get_evaluation_repository,
+)
 from backend.app.serpapi_client import SerpApiError
 
 
@@ -49,7 +56,22 @@ def repository(tmp_path):
 
 
 @pytest.fixture
-def api_repository(repository):
+def api_evaluation_repository(repository):
+    evaluation_repository = SQLiteEvaluationRepository(
+        repository.database_path
+    )
+    app.dependency_overrides[get_evaluation_repository] = (
+        lambda: evaluation_repository
+    )
+    yield evaluation_repository
+    app.dependency_overrides.pop(
+        get_evaluation_repository,
+        None,
+    )
+
+
+@pytest.fixture
+def api_repository(repository, api_evaluation_repository):
     app.dependency_overrides[get_capture_repository] = (
         lambda: repository
     )
@@ -336,3 +358,176 @@ def test_persisted_evaluation_rejects_unresolved_evidence_links(
     assert body["validation"]["valid"] is False
     assert body["validation"]["unresolved_claim_links"]
     assert body["result"] is None
+
+
+def test_persisted_evaluation_is_saved_and_retrievable(
+    api_repository,
+    api_evaluation_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="baseline-history-api",
+    )
+    current = create_capture(
+        sample_search_response(),
+        capture_id="current-history-api",
+    )
+    api_repository.save(baseline)
+    api_repository.save(current)
+
+    response = client.post(
+        "/v1/evaluations/persisted",
+        json={
+            "baseline_capture_id": baseline.capture_id,
+            "current_capture_id": current.capture_id,
+            "agent_answer": persisted_answer_payload(),
+        },
+    )
+    assert response.status_code == 200
+    evaluation_id = response.json()["evaluation_id"]
+
+    history_response = client.get(
+        f"/v1/evaluations/{evaluation_id}"
+    )
+    assert history_response.status_code == 200
+    history = history_response.json()
+
+    assert history["evaluation_id"] == evaluation_id
+    assert history["baseline_capture_id"] == baseline.capture_id
+    assert history["current_capture_id"] == current.capture_id
+    assert history["agent_answer"]["answer_id"] == (
+        "answer-persisted-1"
+    )
+    assert history["response"]["evaluation_id"] == evaluation_id
+    assert history["response"]["result"] is not None
+    assert history["created_at"]
+
+
+def test_persisted_evaluation_retry_is_idempotent(
+    api_repository,
+    api_evaluation_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="baseline-retry-api",
+    )
+    current = create_capture(
+        sample_search_response(),
+        capture_id="current-retry-api",
+    )
+    api_repository.save(baseline)
+    api_repository.save(current)
+    payload = {
+        "baseline_capture_id": baseline.capture_id,
+        "current_capture_id": current.capture_id,
+        "agent_answer": persisted_answer_payload(),
+    }
+
+    first = client.post("/v1/evaluations/persisted", json=payload)
+    second = client.post("/v1/evaluations/persisted", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+    with sqlite3.connect(
+        api_evaluation_repository.database_path
+    ) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM evaluations WHERE evaluation_id = ?",
+            (first.json()["evaluation_id"],),
+        ).fetchone()[0]
+
+    assert count == 1
+
+
+def test_conflicting_persisted_evaluation_inputs_return_409(
+    api_repository,
+    api_evaluation_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="baseline-conflict-api",
+    )
+    current = create_capture(
+        sample_search_response(),
+        capture_id="current-conflict-api",
+    )
+    api_repository.save(baseline)
+    api_repository.save(current)
+    payload = {
+        "baseline_capture_id": baseline.capture_id,
+        "current_capture_id": current.capture_id,
+        "agent_answer": persisted_answer_payload(),
+    }
+
+    first = client.post("/v1/evaluations/persisted", json=payload)
+    assert first.status_code == 200
+
+    changed_payload = {
+        **payload,
+        "agent_answer": persisted_answer_payload(),
+    }
+    changed_payload["agent_answer"]["text"] = (
+        "A changed answer with the same ID."
+    )
+    conflict = client.post(
+        "/v1/evaluations/persisted",
+        json=changed_payload,
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == (
+        "Evaluation ID conflicts with existing content."
+    )
+
+
+def test_get_missing_evaluation_returns_404(api_evaluation_repository):
+    response = client.get("/v1/evaluations/no-such-evaluation")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Evaluation not found."
+
+
+def test_get_evaluation_returns_500_when_stored_record_is_tampered(
+    api_repository,
+    api_evaluation_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="baseline-tamper-api",
+    )
+    current = create_capture(
+        sample_search_response(),
+        capture_id="current-tamper-api",
+    )
+    api_repository.save(baseline)
+    api_repository.save(current)
+
+    response = client.post(
+        "/v1/evaluations/persisted",
+        json={
+            "baseline_capture_id": baseline.capture_id,
+            "current_capture_id": current.capture_id,
+            "agent_answer": persisted_answer_payload(),
+        },
+    )
+    assert response.status_code == 200
+    evaluation_id = response.json()["evaluation_id"]
+
+    with sqlite3.connect(
+        api_evaluation_repository.database_path
+    ) as connection:
+        connection.execute(
+            "UPDATE evaluations SET response_json = ? "
+            "WHERE evaluation_id = ?",
+            (json.dumps({"tampered": True}), evaluation_id),
+        )
+
+    history_response = client.get(
+        f"/v1/evaluations/{evaluation_id}"
+    )
+    assert history_response.status_code == 500
+    assert history_response.json()["detail"] == (
+        "Stored evaluation integrity verification failed."
+    )
