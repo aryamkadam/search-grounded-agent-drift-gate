@@ -621,3 +621,57 @@ def test_list_captures_returns_500_when_capture_is_tampered(api_repository):
     response = client.get("/v1/captures")
     assert response.status_code == 500
     assert response.json()["detail"] == "Stored capture integrity verification failed."
+
+
+def test_persisted_block_decision_is_saved_and_retrievable(
+    api_repository,
+    api_evaluation_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="baseline-support-loss-block",
+    )
+
+    current_response = sample_search_response()
+    current_response["organic_results"] = []
+
+    current = create_capture(
+        current_response,
+        capture_id="current-support-loss-block",
+    )
+
+    api_repository.save(baseline)
+    api_repository.save(current)
+
+    response = client.post(
+        "/v1/evaluations/persisted",
+        json={
+            "baseline_capture_id": baseline.capture_id,
+            "current_capture_id": current.capture_id,
+            "agent_answer": persisted_answer_payload(),
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["validation"]["valid"] is True
+    assert body["result"]["gate"]["decision"] == "block"
+    assert body["result"]["gate"]["material_claim_ids"] == [
+        "claim-persisted-1"
+    ]
+
+    evaluation_id = body["evaluation_id"]
+
+    history_response = client.get(
+        f"/v1/evaluations/{evaluation_id}"
+    )
+
+    assert history_response.status_code == 200
+
+    history = history_response.json()
+    assert history["evaluation_id"] == evaluation_id
+    assert history["response"]["result"]["gate"]["decision"] == "block"
+    assert history["response"]["result"]["gate"]["material_claim_ids"] == [
+        "claim-persisted-1"
+    ]
