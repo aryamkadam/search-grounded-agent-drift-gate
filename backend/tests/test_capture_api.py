@@ -1,3 +1,4 @@
+
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -195,6 +196,7 @@ def test_search_provider_failure_returns_502(
 
     assert response.status_code == 502
 
+
 def test_storage_conflict_returns_controlled_error(
     monkeypatch,
     api_repository,
@@ -223,6 +225,7 @@ def test_storage_conflict_returns_controlled_error(
     assert response.json()["detail"] == (
         "Capture ID conflicts with existing stored content."
     )
+
 
 def persisted_answer_payload(
     identity_key="url:https://example.com/quantum",
@@ -534,6 +537,7 @@ def test_get_evaluation_returns_500_when_stored_record_is_tampered(
         "Stored evaluation integrity verification failed."
     )
 
+
 def test_existing_evaluation_retry_does_not_recompute(
     monkeypatch,
     api_repository,
@@ -576,30 +580,62 @@ def test_existing_evaluation_retry_does_not_recompute(
 def test_list_captures_returns_empty_list(api_repository):
     response = client.get("/v1/captures")
     assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "limit": 50, "offset": 0}
+    assert response.json() == {
+        "items": [],
+        "total": 0,
+        "limit": 50,
+        "offset": 0,
+    }
 
 
 def test_list_captures_returns_newest_first(api_repository):
-    older = create_capture(sample_search_response("older query"), capture_id="capture-list-old", captured_at=datetime(2026, 10, 8, 10, 0, tzinfo=timezone.utc))
-    newer = create_capture(sample_search_response("newer query"), capture_id="capture-list-new", captured_at=datetime(2026, 10, 9, 10, 0, tzinfo=timezone.utc))
+    older = create_capture(
+        sample_search_response("older query"),
+        capture_id="capture-list-old",
+        captured_at=datetime(
+            2026, 10, 8, 10, 0, tzinfo=timezone.utc
+        ),
+    )
+    newer = create_capture(
+        sample_search_response("newer query"),
+        capture_id="capture-list-new",
+        captured_at=datetime(
+            2026, 10, 9, 10, 0, tzinfo=timezone.utc
+        ),
+    )
     api_repository.save(older)
     api_repository.save(newer)
+
     response = client.get("/v1/captures")
     assert response.status_code == 200
     body = response.json()
+
     assert body["total"] == 2
-    assert [item["capture_id"] for item in body["items"]] == ["capture-list-new", "capture-list-old"]
+    assert [
+        item["capture_id"] for item in body["items"]
+    ] == ["capture-list-new", "capture-list-old"]
     assert body["items"][0]["query"] == "newer query"
     assert "raw_response" not in body["items"][0]
 
 
 def test_list_captures_supports_pagination(api_repository):
     for index in range(3):
-        capture = create_capture(sample_search_response(f"query {index}"), capture_id=f"capture-page-{index}", captured_at=datetime(2026, 10, 8, 10 + index, 0, tzinfo=timezone.utc))
+        capture = create_capture(
+            sample_search_response(f"query {index}"),
+            capture_id=f"capture-page-{index}",
+            captured_at=datetime(
+                2026, 10, 8, 10 + index, 0, tzinfo=timezone.utc
+            ),
+        )
         api_repository.save(capture)
-    response = client.get("/v1/captures?limit=1&offset=1")
+
+    response = client.get(
+        "/v1/captures",
+        params={"limit": 1, "offset": 1},
+    )
     assert response.status_code == 200
     body = response.json()
+
     assert body["total"] == 3
     assert body["limit"] == 1
     assert body["offset"] == 1
@@ -607,20 +643,38 @@ def test_list_captures_supports_pagination(api_repository):
     assert body["items"][0]["capture_id"] == "capture-page-1"
 
 
-@pytest.mark.parametrize("query_string", ["?limit=0", "?limit=101", "?offset=-1", "?limit=abc"])
-def test_list_captures_rejects_invalid_pagination(api_repository, query_string):
+@pytest.mark.parametrize(
+    "query_string",
+    ["?limit=0", "?limit=101", "?offset=-1", "?limit=abc"],
+)
+def test_list_captures_rejects_invalid_pagination(
+    api_repository,
+    query_string,
+):
     response = client.get(f"/v1/captures{query_string}")
     assert response.status_code == 422
 
 
-def test_list_captures_returns_500_when_capture_is_tampered(api_repository):
-    capture = create_capture(sample_search_response(), capture_id="capture-list-tampered")
+def test_list_captures_returns_500_when_capture_is_tampered(
+    api_repository,
+):
+    capture = create_capture(
+        sample_search_response(),
+        capture_id="capture-list-tampered",
+    )
     api_repository.save(capture)
+
     with sqlite3.connect(api_repository.database_path) as connection:
-        connection.execute("UPDATE captures SET capture_json = ? WHERE capture_id = ?", (json.dumps({"tampered": True}), capture.capture_id))
+        connection.execute(
+            "UPDATE captures SET capture_json = ? WHERE capture_id = ?",
+            (json.dumps({"tampered": True}), capture.capture_id),
+        )
+
     response = client.get("/v1/captures")
     assert response.status_code == 500
-    assert response.json()["detail"] == "Stored capture integrity verification failed."
+    assert response.json()["detail"] == (
+        "Stored capture integrity verification failed."
+    )
 
 
 def test_persisted_block_decision_is_saved_and_retrievable(
@@ -676,6 +730,7 @@ def test_persisted_block_decision_is_saved_and_retrievable(
         "claim-persisted-1"
     ]
 
+
 @pytest.mark.parametrize(
     "origin",
     [
@@ -696,6 +751,8 @@ def test_vite_origins_are_allowed_by_cors(origin):
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin
     assert "GET" in response.headers["access-control-allow-methods"]
+
+
 def test_replay_capture_returns_stored_snapshot_without_search(
     monkeypatch,
     api_repository,
@@ -744,3 +801,97 @@ def test_replay_capture_returns_404_for_unknown_capture(
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Capture not found."
+
+
+def test_list_evaluations_returns_empty_page(
+    api_repository,
+):
+    response = client.get("/v1/evaluations")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "total": 0,
+        "limit": 50,
+        "offset": 0,
+    }
+
+
+def test_list_evaluations_returns_paginated_summaries(
+    api_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="evaluation-list-baseline",
+    )
+
+    current_response = sample_search_response()
+    current_response["organic_results"] = []
+
+    current = create_capture(
+        current_response,
+        capture_id="evaluation-list-current",
+    )
+
+    api_repository.save(baseline)
+    api_repository.save(current)
+
+    created_evaluation_ids = []
+
+    for answer_id in (
+        "evaluation-list-answer-1",
+        "evaluation-list-answer-2",
+    ):
+        answer = persisted_answer_payload()
+        answer["answer_id"] = answer_id
+
+        response = client.post(
+            "/v1/evaluations/persisted",
+            json={
+                "baseline_capture_id": baseline.capture_id,
+                "current_capture_id": current.capture_id,
+                "agent_answer": answer,
+            },
+        )
+
+        assert response.status_code == 200
+        created_evaluation_ids.append(response.json()["evaluation_id"])
+
+    first_page = client.get(
+        "/v1/evaluations",
+        params={"limit": 1, "offset": 0},
+    )
+
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+
+    assert first_body["total"] == 2
+    assert first_body["limit"] == 1
+    assert first_body["offset"] == 0
+    assert len(first_body["items"]) == 1
+
+    first_item = first_body["items"][0]
+
+    assert first_item["evaluation_id"] in created_evaluation_ids
+    assert first_item["created_at"]
+    assert first_item["baseline_capture_id"] == baseline.capture_id
+    assert first_item["current_capture_id"] == current.capture_id
+    assert first_item["decision"] in ("pass", "warn", "block")
+    assert first_item["severity"] in ("none", "low", "medium", "high")
+    assert isinstance(first_item["affected_claim_count"], int)
+    assert isinstance(first_item["material_claim_count"], int)
+
+    second_page = client.get(
+        "/v1/evaluations",
+        params={"limit": 1, "offset": 1},
+    )
+
+    assert second_page.status_code == 200
+    second_body = second_page.json()
+
+    assert second_body["total"] == 2
+    assert len(second_body["items"]) == 1
+    assert (
+        second_body["items"][0]["evaluation_id"]
+        != first_item["evaluation_id"]
+    )

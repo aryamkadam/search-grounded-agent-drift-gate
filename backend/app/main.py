@@ -128,6 +128,28 @@ class CaptureReplayResponse(BaseModel):
     normalized_evidence: NormalizedEvidence
 
 
+class EvaluationSummary(BaseModel):
+    """Compact summary of a persisted evaluation."""
+
+    evaluation_id: str
+    created_at: datetime
+    baseline_capture_id: str
+    current_capture_id: str
+    decision: Literal["pass", "warn", "block"] | None = None
+    severity: Literal["none", "low", "medium", "high"] | None = None
+    affected_claim_count: int | None = None
+    material_claim_count: int | None = None
+
+
+class EvaluationListResponse(BaseModel):
+    """Paginated summaries of persisted evaluations."""
+
+    items: list[EvaluationSummary]
+    total: int
+    limit: int
+    offset: int
+
+
 @lru_cache(maxsize=1)
 def get_capture_repository() -> SQLiteCaptureRepository:
     """Return the process-wide capture repository."""
@@ -424,6 +446,65 @@ def create_persisted_evaluation(
 
     # Preserve the existing endpoint's response contract.
     return saved_record.response
+
+
+@app.get(
+    "/v1/evaluations",
+    response_model=EvaluationListResponse,
+)
+def list_evaluations_endpoint(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    repository: SQLiteEvaluationRepository = Depends(
+        get_evaluation_repository
+    ),
+) -> EvaluationListResponse:
+    """List persisted evaluation summaries with pagination."""
+
+    try:
+        records, total = repository.list_evaluations(
+            limit=limit,
+            offset=offset,
+        )
+    except EvaluationIntegrityError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Stored evaluation integrity verification failed.",
+        ) from exc
+
+    items: list[EvaluationSummary] = []
+
+    for record in records:
+        result = record.response.result
+        gate = result.gate if result is not None else None
+
+        items.append(
+            EvaluationSummary(
+                evaluation_id=record.evaluation_id,
+                created_at=record.created_at,
+                baseline_capture_id=record.baseline_capture_id,
+                current_capture_id=record.current_capture_id,
+                decision=gate.decision if gate is not None else None,
+                severity=gate.severity if gate is not None else None,
+                affected_claim_count=(
+                    len(gate.affected_claim_ids or [])
+                    if gate is not None
+                    else None
+                ),
+                material_claim_count=(
+                    len(gate.material_claim_ids or [])
+                    if gate is not None
+                    else None
+                ),
+            )
+        )
+
+    return EvaluationListResponse(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get(

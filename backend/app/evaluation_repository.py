@@ -456,3 +456,39 @@ class SQLiteEvaluationRepository:
             return None
 
         return self._deserialize_row(row)
+
+    def list_evaluations(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[EvaluationRecord], int]:
+        """List persisted evaluations with pagination and integrity checks."""
+
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        if offset < 0:
+            raise ValueError("offset cannot be negative.")
+
+        with self._connect() as connection:
+            total_row = connection.execute(
+                "SELECT COUNT(*) AS total FROM evaluations"
+            ).fetchone()
+
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM evaluations
+                ORDER BY created_at DESC, evaluation_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+
+        # Verify each returned record using the existing integrity checker.
+        records = [
+            self._deserialize_row(row)
+            for row in rows
+        ]
+
+        return records, int(total_row["total"])
