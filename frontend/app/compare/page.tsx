@@ -14,8 +14,8 @@ export default async function ComparePage({
 
   return (
     <CompareWorkspace
-      initialOldId={params.old ?? "cap_001"}
-      initialNewId={params.new ?? "cap_009"}
+      initialOldId={params.old}
+      initialNewId={params.new}
     />
   );
 }

@@ -30,7 +30,7 @@ export interface Capture {
   language?: string;
   device?: string;
   surfaces: SearchSurface[];
-  evidenceCount: number;
+  evidenceCount?: number;
   agentRunId?: string;
 }
 
