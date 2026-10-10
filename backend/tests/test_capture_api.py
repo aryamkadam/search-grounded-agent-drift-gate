@@ -571,3 +571,53 @@ def test_existing_evaluation_retry_does_not_recompute(
 
     assert retry.status_code == 200
     assert retry.json() == first.json()
+
+
+def test_list_captures_returns_empty_list(api_repository):
+    response = client.get("/v1/captures")
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0, "limit": 50, "offset": 0}
+
+
+def test_list_captures_returns_newest_first(api_repository):
+    older = create_capture(sample_search_response("older query"), capture_id="capture-list-old", captured_at=datetime(2026, 10, 8, 10, 0, tzinfo=timezone.utc))
+    newer = create_capture(sample_search_response("newer query"), capture_id="capture-list-new", captured_at=datetime(2026, 10, 9, 10, 0, tzinfo=timezone.utc))
+    api_repository.save(older)
+    api_repository.save(newer)
+    response = client.get("/v1/captures")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    assert [item["capture_id"] for item in body["items"]] == ["capture-list-new", "capture-list-old"]
+    assert body["items"][0]["query"] == "newer query"
+    assert "raw_response" not in body["items"][0]
+
+
+def test_list_captures_supports_pagination(api_repository):
+    for index in range(3):
+        capture = create_capture(sample_search_response(f"query {index}"), capture_id=f"capture-page-{index}", captured_at=datetime(2026, 10, 8, 10 + index, 0, tzinfo=timezone.utc))
+        api_repository.save(capture)
+    response = client.get("/v1/captures?limit=1&offset=1")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 3
+    assert body["limit"] == 1
+    assert body["offset"] == 1
+    assert len(body["items"]) == 1
+    assert body["items"][0]["capture_id"] == "capture-page-1"
+
+
+@pytest.mark.parametrize("query_string", ["?limit=0", "?limit=101", "?offset=-1", "?limit=abc"])
+def test_list_captures_rejects_invalid_pagination(api_repository, query_string):
+    response = client.get(f"/v1/captures{query_string}")
+    assert response.status_code == 422
+
+
+def test_list_captures_returns_500_when_capture_is_tampered(api_repository):
+    capture = create_capture(sample_search_response(), capture_id="capture-list-tampered")
+    api_repository.save(capture)
+    with sqlite3.connect(api_repository.database_path) as connection:
+        connection.execute("UPDATE captures SET capture_json = ? WHERE capture_id = ?", (json.dumps({"tampered": True}), capture.capture_id))
+    response = client.get("/v1/captures")
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Stored capture integrity verification failed."

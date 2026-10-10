@@ -164,6 +164,29 @@ class SQLiteCaptureRepository:
                 f"Capture '{capture_id}' contains invalid stored data."
             ) from exc
 
+    def list_captures(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Capture], int]:
+        """List captures newest-first and verify stored integrity."""
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        with self._connect() as connection:
+            total = connection.execute("SELECT COUNT(*) FROM captures").fetchone()[0]
+            rows = connection.execute("SELECT capture_id FROM captures ORDER BY captured_at DESC, capture_id ASC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        captures = []
+        for row in rows:
+            capture_id = row["capture_id"]
+            capture = self.get(capture_id)
+            if capture is None:
+                raise CaptureIntegrityError(f"Capture '{capture_id}' disappeared while listing.")
+            captures.append(capture)
+        return captures, total
+
     def exists(self, capture_id: str) -> bool:
         """Return whether a capture exists."""
 

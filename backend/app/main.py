@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from .capture import create_capture
@@ -34,7 +34,16 @@ app = FastAPI(
     title="Search-Grounded AI Agent Drift Gate",
     version="0.1.0",
 )
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DATABASE_PATH = BACKEND_DIR / "data" / "captures.sqlite3"
@@ -79,6 +88,27 @@ class CaptureCreateResponse(BaseModel):
     storage_status: Literal["stored"]
 
 
+class CaptureSummary(BaseModel):
+    """Compact metadata for a stored capture."""
+
+    capture_id: str
+    captured_at: datetime
+    query: str
+    engine: str
+    country: str
+    device: str
+    search_id: str
+
+
+class CaptureListResponse(BaseModel):
+    """Paginated list of stored captures."""
+
+    items: list[CaptureSummary]
+    total: int
+    limit: int
+    offset: int
+
+
 @lru_cache(maxsize=1)
 def get_capture_repository() -> SQLiteCaptureRepository:
     """Return the process-wide capture repository."""
@@ -96,6 +126,7 @@ def get_evaluation_repository() -> SQLiteEvaluationRepository:
 @app.get("/health")
 def health():
     """Report API health."""
+
     return {"status": "ok"}
 
 
@@ -158,6 +189,51 @@ def create_capture_endpoint(
 
 
 @app.get(
+    "/v1/captures",
+    response_model=CaptureListResponse,
+)
+def list_captures_endpoint(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    repository: SQLiteCaptureRepository = Depends(
+        get_capture_repository
+    ),
+) -> CaptureListResponse:
+    """List stored captures with pagination and integrity verification."""
+
+    try:
+        captures, total = repository.list_captures(
+            limit=limit,
+            offset=offset,
+        )
+    except CaptureIntegrityError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Stored capture integrity verification failed.",
+        ) from exc
+
+    items = [
+        CaptureSummary(
+            capture_id=capture.capture_id,
+            captured_at=capture.captured_at,
+            query=capture.search_context.query,
+            engine=capture.search_context.engine,
+            country=capture.search_context.country,
+            device=capture.search_context.device,
+            search_id=capture.serpapi_metadata.search_id,
+        )
+        for capture in captures
+    ]
+
+    return CaptureListResponse(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get(
     "/v1/captures/{capture_id}",
     response_model=Capture,
 )
@@ -192,7 +268,9 @@ def get_capture_endpoint(
 )
 def create_persisted_evaluation(
     request: PersistedEvaluationRequest,
-    repository: SQLiteCaptureRepository = Depends(get_capture_repository),
+    repository: SQLiteCaptureRepository = Depends(
+        get_capture_repository
+    ),
     evaluation_repository: SQLiteEvaluationRepository = Depends(
         get_evaluation_repository
     ),

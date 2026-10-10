@@ -2,6 +2,7 @@
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from threading import Barrier
 
 import pytest
@@ -173,6 +174,8 @@ def test_concurrent_saves_with_same_id_are_handled_safely(
 
     stored = repository_a.get(original.capture_id)
     assert stored in (original, changed)
+
+
 def test_unsupported_schema_version_is_rejected(tmp_path):
     database_path = tmp_path / "captures.sqlite3"
     repository = SQLiteCaptureRepository(database_path)
@@ -192,3 +195,63 @@ def test_unsupported_schema_version_is_rejected(tmp_path):
 
     with pytest.raises(CaptureIntegrityError):
         repository.get(capture.capture_id)
+
+
+def test_list_captures_returns_newest_first_with_total(tmp_path):
+    repository = SQLiteCaptureRepository(
+        tmp_path / "captures.sqlite3"
+    )
+
+    older = make_capture("capture-old")
+    older.captured_at = datetime(
+        2026, 10, 8, 10, 0, tzinfo=timezone.utc
+    )
+
+    newer = make_capture("capture-new")
+    newer.captured_at = datetime(
+        2026, 10, 9, 10, 0, tzinfo=timezone.utc
+    )
+
+    repository.save(older)
+    repository.save(newer)
+
+    captures, total = repository.list_captures(
+        limit=10,
+        offset=0,
+    )
+
+    assert total == 2
+    assert [capture.capture_id for capture in captures] == [
+        "capture-new",
+        "capture-old",
+    ]
+
+
+def test_list_captures_supports_pagination(tmp_path):
+    repository = SQLiteCaptureRepository(
+        tmp_path / "captures.sqlite3"
+    )
+
+    for capture_id in ("capture-a", "capture-b", "capture-c"):
+        repository.save(make_capture(capture_id))
+
+    captures, total = repository.list_captures(
+        limit=1,
+        offset=1,
+    )
+
+    assert total == 3
+    assert len(captures) == 1
+
+
+def test_list_captures_returns_empty_list_for_empty_repository(
+    tmp_path,
+):
+    repository = SQLiteCaptureRepository(
+        tmp_path / "captures.sqlite3"
+    )
+
+    captures, total = repository.list_captures()
+
+    assert captures == []
+    assert total == 0
