@@ -531,3 +531,41 @@ def test_get_evaluation_returns_500_when_stored_record_is_tampered(
     assert history_response.json()["detail"] == (
         "Stored evaluation integrity verification failed."
     )
+
+def test_existing_evaluation_retry_does_not_recompute(
+    monkeypatch,
+    api_repository,
+    api_evaluation_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="baseline-no-recompute",
+    )
+    current = create_capture(
+        sample_search_response(),
+        capture_id="current-no-recompute",
+    )
+    api_repository.save(baseline)
+    api_repository.save(current)
+
+    payload = {
+        "baseline_capture_id": baseline.capture_id,
+        "current_capture_id": current.capture_id,
+        "agent_answer": persisted_answer_payload(),
+    }
+
+    first = client.post("/v1/evaluations/persisted", json=payload)
+    assert first.status_code == 200
+
+    def unexpected_evaluation(*args, **kwargs):
+        pytest.fail("An existing evaluation should not be recomputed.")
+
+    monkeypatch.setattr(
+        "backend.app.main.evaluate_capture_drift",
+        unexpected_evaluation,
+    )
+
+    retry = client.post("/v1/evaluations/persisted", json=payload)
+
+    assert retry.status_code == 200
+    assert retry.json() == first.json()

@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -215,13 +215,12 @@ class SQLiteEvaluationRepository:
             existing.baseline_capture_id == normalized.baseline_capture_id
             and existing.current_capture_id == normalized.current_capture_id
             and existing.agent_answer == normalized.agent_answer
-            and existing.response == normalized.response
         ):
             return existing
 
         raise EvaluationConflictError(
             f"Evaluation '{normalized.evaluation_id}' already exists "
-            "with different inputs or output."
+            "with different inputs."
         )
 
     def _deserialize_row(self, row: sqlite3.Row) -> EvaluationRecord:

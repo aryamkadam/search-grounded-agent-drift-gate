@@ -198,6 +198,35 @@ def create_persisted_evaluation(
 ) -> DriftEvaluationResponse:
     """Evaluate stored captures and persist the immutable result."""
 
+    evaluation_id = (
+        f"{request.baseline_capture_id}:"
+        f"{request.current_capture_id}:"
+        f"{request.agent_answer.answer_id}"
+    )
+
+    try:
+        existing_record = evaluation_repository.get(evaluation_id)
+    except EvaluationIntegrityError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Stored evaluation integrity verification failed.",
+        ) from exc
+
+    if existing_record is not None:
+        if (
+            existing_record.baseline_capture_id
+            == request.baseline_capture_id
+            and existing_record.current_capture_id
+            == request.current_capture_id
+            and existing_record.agent_answer == request.agent_answer
+        ):
+            return existing_record.response
+
+        raise HTTPException(
+            status_code=409,
+            detail="Evaluation ID conflicts with existing content.",
+        )
+
     try:
         baseline_capture = repository.get(request.baseline_capture_id)
         current_capture = repository.get(request.current_capture_id)

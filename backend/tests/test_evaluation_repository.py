@@ -190,3 +190,21 @@ def test_unsupported_schema_version_is_rejected(repository):
 
     with pytest.raises(EvaluationIntegrityError):
         repository.get(record.evaluation_id)
+
+def test_same_inputs_keep_original_record_when_result_changes(
+    repository,
+):
+    original = make_record()
+    repository.save(original)
+
+    changed_response = original.response.model_copy(deep=True)
+    changed_response.validation.valid = False
+
+    retry = original.model_copy(
+        update={"response": changed_response}
+    )
+
+    saved = repository.save(retry)
+
+    assert saved == original
+    assert repository.get(original.evaluation_id) == original
