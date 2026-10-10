@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useState } from "react";
@@ -25,8 +26,23 @@ interface CaptureSummary {
   device: string;
 }
 
+interface EvaluationSummary {
+  id: string;
+  createdAt: string;
+  baselineCaptureId: string;
+  currentCaptureId: string;
+  decision: "pass" | "warn" | "block" | null;
+  severity: string | null;
+  affectedClaimCount: number | null;
+  materialClaimCount: number | null;
+}
+
 function asRecord(value: unknown): JsonRecord | null {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  ) {
     return value as JsonRecord;
   }
 
@@ -37,6 +53,14 @@ function getString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim()
     ? value.trim()
     : undefined;
+}
+
+function getCount(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0
+    ? value
+    : null;
 }
 
 function formatDate(value: string): string {
@@ -54,16 +78,10 @@ function formatDate(value: string): string {
 
 function mapCapture(value: unknown): CaptureSummary | null {
   const record = asRecord(value);
-
-  if (!record) {
-    return null;
-  }
+  if (!record) return null;
 
   const id = getString(record.capture_id);
-
-  if (!id) {
-    return null;
-  }
+  if (!id) return null;
 
   return {
     id,
@@ -77,78 +95,190 @@ function mapCapture(value: unknown): CaptureSummary | null {
   };
 }
 
+function mapEvaluation(value: unknown): EvaluationSummary | null {
+  const record = asRecord(value);
+  if (!record) return null;
+
+  const id = getString(record.evaluation_id);
+  if (!id) return null;
+
+  const rawDecision = getString(record.decision)?.toLowerCase();
+
+  const decision: EvaluationSummary["decision"] =
+    rawDecision === "pass" ||
+    rawDecision === "warn" ||
+    rawDecision === "block"
+      ? rawDecision
+      : null;
+
+  return {
+    id,
+    createdAt: getString(record.created_at) ?? "",
+    baselineCaptureId:
+      getString(record.baseline_capture_id) ?? "Unknown",
+    currentCaptureId:
+      getString(record.current_capture_id) ?? "Unknown",
+    decision,
+    severity: getString(record.severity)?.toLowerCase() ?? null,
+    affectedClaimCount: getCount(record.affected_claim_count),
+    materialClaimCount: getCount(record.material_claim_count),
+  };
+}
+
+function decisionLabel(decision: EvaluationSummary["decision"]) {
+  if (decision === "pass") return "PASS";
+  if (decision === "warn") return "WARN";
+  if (decision === "block") return "BLOCK";
+  return "UNRESOLVED";
+}
+
+function decisionClass(decision: EvaluationSummary["decision"]) {
+  if (decision === "pass") {
+    return "border-green-900/60 bg-green-950/20 text-green-400";
+  }
+
+  if (decision === "warn") {
+    return "border-amber-900/60 bg-amber-950/20 text-amber-400";
+  }
+
+  if (decision === "block") {
+    return "border-red-900/60 bg-red-950/20 text-red-400";
+  }
+
+  return "border-zinc-700 bg-zinc-900 text-zinc-400";
+}
+
 export default function Home() {
   const [captures, setCaptures] = useState<CaptureSummary[]>([]);
   const [totalCaptures, setTotalCaptures] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [evaluations, setEvaluations] = useState<EvaluationSummary[]>([]);
+  const [totalEvaluations, setTotalEvaluations] = useState<number | null>(null);
+
+  const [capturesLoading, setCapturesLoading] = useState(true);
+  const [evaluationsLoading, setEvaluationsLoading] = useState(true);
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
 
     const timer = window.setTimeout(() => {
-      async function loadCaptures() {
-        const baseUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+      async function loadDashboard() {
+        const baseUrl =
+          process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
 
         if (!baseUrl) {
           if (!cancelled) {
-            setError(
-              "NEXT_PUBLIC_API_URL is missing from frontend/.env.local.",
-            );
-            setLoading(false);
+            const message =
+              "NEXT_PUBLIC_API_URL is missing from frontend/.env.local.";
+            setCaptureError(message);
+            setEvaluationError(message);
+            setCapturesLoading(false);
+            setEvaluationsLoading(false);
           }
           return;
         }
 
-        try {
-          const response = await fetch(`${baseUrl}/v1/captures`, {
-            cache: "no-store",
-          });
+        const loadCaptures = async () => {
+          try {
+            const response = await fetch(`${baseUrl}/v1/captures`, {
+              cache: "no-store",
+            });
 
-          if (!response.ok) {
-            throw new Error(`Captures API returned HTTP ${response.status}.`);
+            if (!response.ok) {
+              throw new Error(`Captures API returned HTTP ${response.status}.`);
+            }
+
+            const payload: unknown = await response.json();
+            const body = asRecord(payload);
+
+            if (!body || !Array.isArray(body.items)) {
+              throw new Error("Unexpected captures API response.");
+            }
+
+            const items = body.items
+              .map(mapCapture)
+              .filter((item): item is CaptureSummary => item !== null);
+
+            const total =
+              getCount(body.total) ?? items.length;
+
+            if (!cancelled) {
+              setCaptures(items);
+              setTotalCaptures(total);
+              setCaptureError(null);
+            }
+          } catch (err) {
+            if (!cancelled) {
+              setCaptureError(
+                err instanceof Error
+                  ? err.message
+                  : "Unable to load captures.",
+              );
+              setCaptures([]);
+              setTotalCaptures(null);
+            }
+          } finally {
+            if (!cancelled) setCapturesLoading(false);
           }
+        };
 
-          const payload: unknown = await response.json();
-          const body = asRecord(payload);
+        const loadEvaluations = async () => {
+          try {
+            const response = await fetch(`${baseUrl}/v1/evaluations`, {
+              cache: "no-store",
+            });
 
-          if (!body || !Array.isArray(body.items)) {
-            throw new Error("The captures API returned an unexpected response.");
+            if (!response.ok) {
+              throw new Error(
+                `Evaluation history API returned HTTP ${response.status}.`,
+              );
+            }
+
+            const payload: unknown = await response.json();
+            const body = asRecord(payload);
+
+            if (!body || !Array.isArray(body.items)) {
+              throw new Error("Unexpected evaluation history API response.");
+            }
+
+            const items = body.items
+              .map(mapEvaluation)
+              .filter((item): item is EvaluationSummary => item !== null);
+
+            const total = getCount(body.total);
+
+            if (total === null) {
+              throw new Error(
+                "Evaluation history response is missing a valid total count.",
+              );
+            }
+
+            if (!cancelled) {
+              setEvaluations(items);
+              setTotalEvaluations(total);
+              setEvaluationError(null);
+            }
+          } catch (err) {
+            if (!cancelled) {
+              setEvaluationError(
+                err instanceof Error
+                  ? err.message
+                  : "Unable to load evaluation history.",
+              );
+              setEvaluations([]);
+              setTotalEvaluations(null);
+            }
+          } finally {
+            if (!cancelled) setEvaluationsLoading(false);
           }
+        };
 
-          const mapped = body.items
-            .map(mapCapture)
-            .filter((item): item is CaptureSummary => item !== null);
-
-          const total =
-            typeof body.total === "number" && Number.isFinite(body.total)
-              ? body.total
-              : mapped.length;
-
-          if (!cancelled) {
-            setCaptures(mapped);
-            setTotalCaptures(total);
-            setError(null);
-          }
-        } catch (err) {
-          if (!cancelled) {
-            setError(
-              err instanceof Error
-                ? err.message
-                : "Unable to load captures from the backend.",
-            );
-            setCaptures([]);
-            setTotalCaptures(null);
-          }
-        } finally {
-          if (!cancelled) {
-            setLoading(false);
-          }
-        }
+        await Promise.all([loadCaptures(), loadEvaluations()]);
       }
 
-      void loadCaptures();
+      void loadDashboard();
     }, 0);
 
     return () => {
@@ -157,32 +287,69 @@ export default function Home() {
     };
   }, [retryKey]);
 
+  const decidedEvaluations = evaluations.filter(
+    (item) => item.decision !== null,
+  );
+
+  const unresolvedCount = evaluations.filter(
+    (item) => item.decision === null,
+  ).length;
+
+  // A drift event is a recorded WARN or BLOCK decision.
+  const driftEvents = decidedEvaluations.filter(
+    (item) => item.decision === "warn" || item.decision === "block",
+  ).length;
+
+  // Gate failures count recorded BLOCK decisions only.
+  const gateFailures = decidedEvaluations.filter(
+    (item) => item.decision === "block",
+  ).length;
+
   const stats = [
     {
       label: "Total Captures",
-      value: loading ? "…" : (totalCaptures?.toString() ?? "—"),
-      description: error ? "Live count unavailable" : "Stored search observations",
+      value: capturesLoading
+        ? "…"
+        : totalCaptures?.toString() ?? "—",
+      description: captureError
+        ? "Live count unavailable"
+        : "Stored search observations",
       icon: Search,
     },
     {
       label: "Comparisons",
-      value: "—",
-      description: "Evaluation history count unavailable",
+      value: evaluationsLoading
+        ? "…"
+        : totalEvaluations?.toString() ?? "—",
+      description: evaluationError
+        ? "History unavailable"
+        : "Persisted evaluation records",
       icon: GitCompareArrows,
     },
     {
       label: "Drift Events",
-      value: "—",
-      description: "Requires evaluation history",
+      value: evaluationsLoading || evaluationError
+        ? "—"
+        : driftEvents.toString(),
+      description: evaluationError
+        ? "History unavailable"
+        : "Recorded WARN or BLOCK decisions",
       icon: AlertTriangle,
     },
     {
       label: "Gate Failures",
-      value: "—",
-      description: "Requires evaluation history",
+      value: evaluationsLoading || evaluationError
+        ? "—"
+        : gateFailures.toString(),
+      description: evaluationError
+        ? "History unavailable"
+        : "Recorded BLOCK decisions",
       icon: ShieldAlert,
     },
   ];
+
+  const loading = capturesLoading || evaluationsLoading;
+  const anyError = Boolean(captureError || evaluationError);
 
   return (
     <div className="space-y-8">
@@ -206,18 +373,18 @@ export default function Home() {
           <Badge
             variant="outline"
             className={`w-fit px-3 py-1.5 ${
-              error
-                ? "border-red-900/60 bg-red-950/20 text-red-400"
+              anyError
+                ? "border-amber-900/60 bg-amber-950/20 text-amber-400"
                 : loading
                   ? "border-zinc-800 bg-zinc-950 text-zinc-400"
                   : "border-green-900/60 bg-green-950/20 text-green-400"
             }`}
           >
-            {error
-              ? "API unavailable"
+            {anyError
+              ? "Partial API availability"
               : loading
-                ? "Connecting to API…"
-                : "Live capture API"}
+                ? "Connecting to APIs…"
+                : "Live API data"}
           </Badge>
         </div>
       </section>
@@ -227,19 +394,14 @@ export default function Home() {
           const Icon = stat.icon;
 
           return (
-            <Card
-              key={stat.label}
-              className="border-zinc-800 bg-[#111113]"
-            >
+            <Card key={stat.label} className="border-zinc-800 bg-[#111113]">
               <CardContent className="p-5">
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-xs text-zinc-500">{stat.label}</p>
-
                     <p className="mt-3 text-3xl font-semibold tracking-tight">
                       {stat.value}
                     </p>
-
                     <p className="mt-1 text-xs text-zinc-600">
                       {stat.description}
                     </p>
@@ -255,22 +417,30 @@ export default function Home() {
         })}
       </section>
 
-      {error && (
-        <Card className="border-red-900/40 bg-[#111113]">
+      {anyError && (
+        <Card className="border-amber-900/40 bg-[#111113]">
           <CardContent className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-medium text-red-400">
-                Could not load live captures
+              <p className="text-sm font-medium text-amber-400">
+                Some dashboard data is unavailable
               </p>
-              <p className="mt-1 break-words text-xs text-zinc-500">
-                {error}
-              </p>
+              {captureError && (
+                <p className="mt-1 break-words text-xs text-zinc-500">
+                  Captures: {captureError}
+                </p>
+              )}
+              {evaluationError && (
+                <p className="mt-1 break-words text-xs text-zinc-500">
+                  Evaluations: {evaluationError}
+                </p>
+              )}
             </div>
 
             <button
               type="button"
               onClick={() => {
-                setLoading(true);
+                setCapturesLoading(true);
+                setEvaluationsLoading(true);
                 setRetryKey((key) => key + 1);
               }}
               className="flex w-fit items-center gap-2 rounded-md border border-zinc-700 px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-900"
@@ -303,15 +473,15 @@ export default function Home() {
           </CardHeader>
 
           <CardContent className="p-0">
-            {loading ? (
+            {capturesLoading ? (
               <div className="flex items-center gap-2 px-6 py-8 text-sm text-zinc-500">
                 <LoaderCircle className="h-4 w-4 animate-spin" />
                 Loading captures…
               </div>
-            ) : error ? (
+            ) : captureError ? (
               <p className="px-6 py-8 text-sm text-zinc-500">
-                Recent captures cannot be shown until the backend connection
-                is restored.
+                Recent captures cannot be shown until the capture API is
+                available.
               </p>
             ) : captures.length === 0 ? (
               <p className="px-6 py-8 text-sm text-zinc-500">
@@ -329,13 +499,11 @@ export default function Home() {
                       <p className="truncate text-sm text-zinc-200">
                         {capture.query}
                       </p>
-
                       <p className="mt-1 text-xs text-zinc-600">
                         {formatDate(capture.capturedAt)} · {capture.country} ·{" "}
                         {capture.device}
                       </p>
-
-                      <p className="mt-1 truncate font-mono text-[10px] text-zinc-700">
+                      <p className="mt-1 break-all font-mono text-[10px] text-zinc-700">
                         {capture.id}
                       </p>
                     </div>
@@ -353,36 +521,89 @@ export default function Home() {
             <div className="flex items-center gap-2">
               <GitCompareArrows className="h-4 w-4 text-zinc-400" />
               <h2 className="text-sm font-semibold text-zinc-200">
-                Evaluation overview
+                Recent evaluations
               </h2>
             </div>
           </CardHeader>
 
-          <CardContent>
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-4">
-              <p className="text-sm font-medium text-zinc-200">
-                Evaluation history unavailable
+          <CardContent className="space-y-4">
+            {evaluationsLoading ? (
+              <div className="flex items-center gap-2 py-6 text-sm text-zinc-500">
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+                Loading evaluation history…
+              </div>
+            ) : evaluationError ? (
+              <p className="text-sm text-zinc-500">
+                Evaluation history is currently unavailable.
               </p>
-
-              <p className="mt-2 text-xs leading-5 text-zinc-500">
-                The current backend exposes evaluation creation and retrieval
-                by ID, but not an endpoint that lists all evaluations. Summary
-                counts and latest drift cannot be calculated accurately yet.
+            ) : evaluations.length === 0 ? (
+              <p className="text-sm text-zinc-500">
+                No persisted evaluations were returned by the backend.
               </p>
+            ) : (
+              <div className="space-y-3">
+                {evaluations.slice(0, 5).map((evaluation) => (
+                  <div
+                    key={evaluation.id}
+                    className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Badge
+                        variant="outline"
+                        className={decisionClass(evaluation.decision)}
+                      >
+                        {decisionLabel(evaluation.decision)}
+                      </Badge>
+                      <span className="text-[10px] text-zinc-600">
+                        {evaluation.createdAt
+                          ? formatDate(evaluation.createdAt)
+                          : "Time unavailable"}
+                      </span>
+                    </div>
 
-              <Link
-                href="/compare"
-                className="mt-5 flex w-full items-center justify-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800"
-              >
-                <GitCompareArrows className="h-3.5 w-3.5" />
-                Run a comparison
-              </Link>
-            </div>
+                    <p className="mt-3 break-all font-mono text-[10px] leading-5 text-zinc-500">
+                      {evaluation.id}
+                    </p>
 
-            <div className="mt-4 flex items-center gap-2 text-xs text-zinc-600">
+                    <p className="mt-2 text-xs text-zinc-500">
+                      Affected claims:{" "}
+                      {evaluation.affectedClaimCount ?? "Unavailable"}
+                      {" · "}
+                      Material claims:{" "}
+                      {evaluation.materialClaimCount ?? "Unavailable"}
+                    </p>
+
+                    <p className="mt-1 break-all text-[10px] text-zinc-600">
+                      Baseline: {evaluation.baselineCaptureId}
+                    </p>
+                    <p className="mt-1 break-all text-[10px] text-zinc-600">
+                      Current: {evaluation.currentCaptureId}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!evaluationError && !evaluationsLoading && unresolvedCount > 0 && (
+              <p className="text-xs leading-5 text-amber-400">
+                {unresolvedCount} evaluation
+                {unresolvedCount === 1 ? "" : "s"} have no recorded gate
+                decision and are excluded from drift and failure counts.
+              </p>
+            )}
+
+            <Link
+              href="/compare"
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800"
+            >
+              <GitCompareArrows className="h-3.5 w-3.5" />
+              Run a comparison
+            </Link>
+
+            <div className="flex items-center gap-2 text-xs text-zinc-600">
               <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
-              {error ? "Backend connection needs attention" : loading
-                ? "Checking capture API connection"
+              {captureError
+                ? "Capture API needs attention"
                 : "Capture list loaded from backend"}
             </div>
           </CardContent>
