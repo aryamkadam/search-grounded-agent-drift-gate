@@ -1,4 +1,7 @@
+
 from datetime import datetime, timezone
+
+import pytest
 
 from backend.app.claims import (
     AgentAnswer,
@@ -115,6 +118,7 @@ def test_valid_evaluation_returns_complete_result():
 
     assert response.validation.valid is True
     assert response.validation.unresolved_claim_links == []
+    assert response.validation.incompatible_search_context == []
 
     assert response.evaluation_id == (
         "baseline:current:answer-1"
@@ -183,6 +187,7 @@ def test_valid_evaluation_detects_complete_support_loss():
     )
 
     assert response.validation.valid is True
+    assert response.validation.incompatible_search_context == []
     assert response.result is not None
 
     assert response.result.claim_impacts[0].material is True
@@ -231,6 +236,7 @@ def test_unresolved_baseline_link_is_validation_failure():
     assert validation.resolved is False
     assert validation.reason is not None
 
+    assert response.validation.incompatible_search_context == []
     assert response.result is None
 
 
@@ -257,6 +263,91 @@ def test_validation_failure_does_not_produce_gate_decision():
 
     assert response.validation.valid is False
     assert response.result is None
+
+
+def test_different_queries_do_not_produce_gate_decision():
+    baseline = make_capture(capture_id="baseline")
+    current = make_capture(capture_id="current")
+    current.search_context.query = "different query"
+
+    response = evaluate_capture_drift(
+        DriftEvaluationRequest(
+            baseline_capture=baseline,
+            current_capture=current,
+            agent_answer=make_answer(),
+        )
+    )
+
+    assert response.validation.valid is False
+    assert response.result is None
+
+    assert len(response.validation.incompatible_search_context) == 1
+
+    mismatch = response.validation.incompatible_search_context[0]
+
+    assert mismatch.field == "query"
+    assert mismatch.baseline_value == "test query"
+    assert mismatch.current_value == "different query"
+
+
+def test_matching_search_context_allows_evaluation():
+    baseline = make_capture(capture_id="baseline")
+    current = make_capture(capture_id="current")
+
+    response = evaluate_capture_drift(
+        DriftEvaluationRequest(
+            baseline_capture=baseline,
+            current_capture=current,
+            agent_answer=make_answer(),
+        )
+    )
+
+    assert response.validation.valid is True
+    assert response.validation.incompatible_search_context == []
+    assert response.result is not None
+
+
+@pytest.mark.parametrize(
+    ("field", "different_value"),
+    [
+        ("engine", "bing"),
+        ("google_domain", "google.co.uk"),
+        ("language", "fr"),
+        ("country", "uk"),
+        ("location", "London"),
+        ("device", "mobile"),
+    ],
+)
+def test_different_search_context_fields_prevent_evaluation(
+    field,
+    different_value,
+):
+    baseline = make_capture(capture_id="baseline")
+    current = make_capture(capture_id="current")
+
+    setattr(current.search_context, field, different_value)
+
+    response = evaluate_capture_drift(
+        DriftEvaluationRequest(
+            baseline_capture=baseline,
+            current_capture=current,
+            agent_answer=make_answer(),
+        )
+    )
+
+    assert response.validation.valid is False
+    assert response.result is None
+
+    mismatches = response.validation.incompatible_search_context
+
+    assert len(mismatches) == 1
+    assert mismatches[0].field == field
+    assert mismatches[0].baseline_value == getattr(
+        baseline.search_context,
+        field,
+    )
+    assert mismatches[0].current_value == different_value
+
 
 def test_explicit_evaluator_versions_produce_distinct_ids():
     baseline = make_capture(capture_id="baseline")
