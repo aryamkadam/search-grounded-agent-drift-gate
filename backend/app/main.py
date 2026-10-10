@@ -3,8 +3,9 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-from fastapi.middleware.cors import CORSMiddleware
+
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from .capture import create_capture
@@ -34,16 +35,21 @@ app = FastAPI(
     title="Search-Grounded AI Agent Drift Gate",
     version="0.1.0",
 )
+
+# Allow the local frontend development servers to call this API.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ],
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
+
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DATABASE_PATH = BACKEND_DIR / "data" / "captures.sqlite3"
@@ -280,6 +286,7 @@ def create_persisted_evaluation(
     # The persisted API owns the evaluator version. Clients cannot
     # choose a version and accidentally select a different gate policy.
     evaluator_version = "v1"
+
     evaluation_id = build_evaluation_id(
         baseline_capture_id=request.baseline_capture_id,
         current_capture_id=request.current_capture_id,
@@ -336,6 +343,7 @@ def create_persisted_evaluation(
         current_capture=current_capture,
         agent_answer=request.agent_answer,
     )
+
     response = evaluate_capture_drift(
         evaluation_request,
         evaluator_version=evaluator_version,

@@ -675,3 +675,24 @@ def test_persisted_block_decision_is_saved_and_retrievable(
     assert history["response"]["result"]["gate"]["material_claim_ids"] == [
         "claim-persisted-1"
     ]
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+)
+def test_vite_origins_are_allowed_by_cors(origin):
+    response = client.options(
+        "/v1/captures",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "GET" in response.headers["access-control-allow-methods"]
