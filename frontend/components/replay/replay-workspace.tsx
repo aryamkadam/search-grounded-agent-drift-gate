@@ -120,9 +120,7 @@ function extractEvidence(value: unknown): EvidenceItem[] {
     if (depth > 8) return;
 
     if (Array.isArray(node)) {
-      node.forEach((item, index) =>
-        visit(item, path, depth + 1),
-      );
+      node.forEach((item) => visit(item, path, depth + 1));
       return;
     }
 
@@ -211,7 +209,7 @@ export function ReplayWorkspace() {
     const timer = window.setTimeout(() => {
       async function loadCaptures() {
         const baseUrl =
-          process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+          process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "");
 
         if (!baseUrl) {
           if (!cancelled) {
@@ -287,7 +285,7 @@ export function ReplayWorkspace() {
 
   async function runReplay() {
     const baseUrl =
-      process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+      process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "");
 
     if (!baseUrl || !captureId) {
       setError(
