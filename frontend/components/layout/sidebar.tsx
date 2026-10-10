@@ -102,7 +102,7 @@ export function Sidebar() {
           <div className="flex items-center gap-2">
             <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
             <span className="text-[11px] text-zinc-500">
-              API connected
+              Backend integration pending
             </span>
           </div>
         </div>

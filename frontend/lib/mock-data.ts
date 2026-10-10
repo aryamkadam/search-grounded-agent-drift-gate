@@ -109,6 +109,17 @@ export const captures: Capture[] = [
     evidenceCount: 10,
     agentRunId: "run_008",
   },
+    {
+    id: "cap_009",
+    query: "best AI coding tools for developers in 2026",
+    timestamp: "2026-10-05T18:42:00+05:30",
+    location: "Pune, India",
+    language: "en-IN",
+    device: "desktop",
+    surfaces: ["organic", "ai_overview", "news"],
+    evidenceCount: 13,
+    agentRunId: "run_009",
+  },
 ];
 
 /*
@@ -121,7 +132,7 @@ export const demoComparison: DriftComparison = {
 
   oldCaptureId: "cap_001",
 
-  newCaptureId: "cap_002",
+  newCaptureId: "cap_009",
 
   query: "best AI coding tools for developers in 2026",
 
