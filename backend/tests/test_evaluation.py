@@ -257,3 +257,36 @@ def test_validation_failure_does_not_produce_gate_decision():
 
     assert response.validation.valid is False
     assert response.result is None
+
+def test_explicit_evaluator_versions_produce_distinct_ids():
+    baseline = make_capture(capture_id="baseline")
+    current = make_capture(capture_id="current")
+    answer = make_answer()
+
+    request = DriftEvaluationRequest(
+        baseline_capture=baseline,
+        current_capture=current,
+        agent_answer=answer,
+    )
+
+    legacy = evaluate_capture_drift(request)
+    version_one = evaluate_capture_drift(
+        request,
+        evaluator_version="v1",
+    )
+    version_two = evaluate_capture_drift(
+        request,
+        evaluator_version="v2",
+    )
+
+    # The existing stateless endpoint's legacy ID must remain unchanged.
+    assert legacy.evaluation_id == "baseline:current:answer-1"
+
+    # Explicit evaluator versions must produce different stable IDs.
+    assert version_one.evaluation_id.startswith("eval-v1-")
+    assert version_two.evaluation_id.startswith("eval-v2-")
+    assert version_one.evaluation_id != version_two.evaluation_id
+
+    # Versioning changes evaluation identity, not the current algorithm's
+    # result for otherwise identical inputs.
+    assert version_one.result == version_two.result

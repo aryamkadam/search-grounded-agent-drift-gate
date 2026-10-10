@@ -17,6 +17,7 @@ from .capture_repository import (
 from .evaluation import (
     DriftEvaluationRequest,
     DriftEvaluationResponse,
+    build_evaluation_id,
     evaluate_capture_drift,
 )
 from .evaluation_repository import (
@@ -198,10 +199,14 @@ def create_persisted_evaluation(
 ) -> DriftEvaluationResponse:
     """Evaluate stored captures and persist the immutable result."""
 
-    evaluation_id = (
-        f"{request.baseline_capture_id}:"
-        f"{request.current_capture_id}:"
-        f"{request.agent_answer.answer_id}"
+    # The persisted API owns the evaluator version. Clients cannot
+    # choose a version and accidentally select a different gate policy.
+    evaluator_version = "v1"
+    evaluation_id = build_evaluation_id(
+        baseline_capture_id=request.baseline_capture_id,
+        current_capture_id=request.current_capture_id,
+        answer_id=request.agent_answer.answer_id,
+        evaluator_version=evaluator_version,
     )
 
     try:
@@ -253,7 +258,10 @@ def create_persisted_evaluation(
         current_capture=current_capture,
         agent_answer=request.agent_answer,
     )
-    response = evaluate_capture_drift(evaluation_request)
+    response = evaluate_capture_drift(
+        evaluation_request,
+        evaluator_version=evaluator_version,
+    )
 
     record = EvaluationRecord(
         evaluation_id=response.evaluation_id,
@@ -262,6 +270,7 @@ def create_persisted_evaluation(
         current_capture_id=current_capture.capture_id,
         agent_answer=request.agent_answer,
         response=response,
+        evaluator_version=evaluator_version,
     )
 
     try:

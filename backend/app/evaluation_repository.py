@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel, model_validator
 
 from .claims import AgentAnswer
-from .evaluation import DriftEvaluationResponse
+from .evaluation import DriftEvaluationResponse, build_evaluation_id
 
 
 class EvaluationConflictError(Exception):
@@ -27,6 +27,7 @@ class EvaluationRecord(BaseModel):
     current_capture_id: str
     agent_answer: AgentAnswer
     response: DriftEvaluationResponse
+    evaluator_version: str = "legacy"
 
     @model_validator(mode="after")
     def validate_consistent_ids(self):
@@ -39,13 +40,29 @@ class EvaluationRecord(BaseModel):
         if self.current_capture_id != self.response.current_capture_id:
             raise ValueError("Current capture IDs do not match.")
 
+        version = (
+            None if self.evaluator_version == "legacy"
+            else self.evaluator_version
+        )
+        expected_id = build_evaluation_id(
+            baseline_capture_id=self.baseline_capture_id,
+            current_capture_id=self.current_capture_id,
+            answer_id=self.agent_answer.answer_id,
+            evaluator_version=version,
+        )
+        if self.evaluation_id != expected_id:
+            raise ValueError(
+                "Evaluation ID does not match its inputs and evaluator version."
+            )
+
         return self
 
 
 class SQLiteEvaluationRepository:
     """Persistent evaluation records backed by SQLite."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
+    LEGACY_SCHEMA_VERSION = 1
 
     def __init__(self, database_path: str | Path):
         self.database_path = Path(database_path)
@@ -75,10 +92,21 @@ class SQLiteEvaluationRepository:
                     request_json TEXT NOT NULL,
                     response_json TEXT NOT NULL,
                     content_hash TEXT NOT NULL,
+                    evaluator_version TEXT NOT NULL,
                     schema_version INTEGER NOT NULL
                 )
                 """
             )
+
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(evaluations)"
+                ).fetchall()
+            }
+
+            if "evaluator_version" not in columns:
+                self._migrate_v1(connection)
 
     @staticmethod
     def _serialize_json(payload: dict) -> str:
@@ -90,7 +118,7 @@ class SQLiteEvaluationRepository:
         )
 
     @classmethod
-    def _hash_fields(
+    def _hash_fields_v1(
         cls,
         *,
         evaluation_id: str,
@@ -101,6 +129,8 @@ class SQLiteEvaluationRepository:
         response_json: str,
         schema_version: int,
     ) -> str:
+        """Reproduce the original schema-v1 hash format exactly."""
+
         payload = {
             "evaluation_id": evaluation_id,
             "created_at": created_at,
@@ -111,9 +141,38 @@ class SQLiteEvaluationRepository:
             "schema_version": schema_version,
         }
 
-        serialized = cls._serialize_json(payload)
         return hashlib.sha256(
-            serialized.encode("utf-8")
+            cls._serialize_json(payload).encode("utf-8")
+        ).hexdigest()
+
+    @classmethod
+    def _hash_fields(
+        cls,
+        *,
+        evaluation_id: str,
+        created_at: str,
+        baseline_capture_id: str,
+        current_capture_id: str,
+        request_json: str,
+        response_json: str,
+        evaluator_version: str,
+        schema_version: int,
+    ) -> str:
+        """Hash all schema-v2 fields, including evaluator version."""
+
+        payload = {
+            "evaluation_id": evaluation_id,
+            "created_at": created_at,
+            "baseline_capture_id": baseline_capture_id,
+            "current_capture_id": current_capture_id,
+            "request_json": request_json,
+            "response_json": response_json,
+            "evaluator_version": evaluator_version,
+            "schema_version": schema_version,
+        }
+
+        return hashlib.sha256(
+            cls._serialize_json(payload).encode("utf-8")
         ).hexdigest()
 
     @staticmethod
@@ -128,8 +187,108 @@ class SQLiteEvaluationRepository:
     def _response_payload(record: EvaluationRecord) -> dict:
         return record.response.model_dump(mode="json")
 
+    def _migrate_v1(self, connection: sqlite3.Connection) -> None:
+        """Verify every legacy record before atomically upgrading its schema."""
+
+        connection.execute("BEGIN IMMEDIATE")
+
+        rows = connection.execute(
+            "SELECT * FROM evaluations ORDER BY evaluation_id"
+        ).fetchall()
+
+        # Validate all rows before making any schema or data changes.
+        for row in rows:
+            if row["schema_version"] != self.LEGACY_SCHEMA_VERSION:
+                raise EvaluationIntegrityError(
+                    f"Evaluation '{row['evaluation_id']}' uses an "
+                    "unsupported legacy schema version."
+                )
+
+            expected_hash = self._hash_fields_v1(
+                evaluation_id=row["evaluation_id"],
+                created_at=row["created_at"],
+                baseline_capture_id=row["baseline_capture_id"],
+                current_capture_id=row["current_capture_id"],
+                request_json=row["request_json"],
+                response_json=row["response_json"],
+                schema_version=row["schema_version"],
+            )
+
+            if expected_hash != row["content_hash"]:
+                raise EvaluationIntegrityError(
+                    f"Legacy evaluation '{row['evaluation_id']}' "
+                    "failed integrity verification; migration aborted."
+                )
+
+            try:
+                request_payload = json.loads(row["request_json"])
+                response_payload = json.loads(row["response_json"])
+
+                if (
+                    request_payload["baseline_capture_id"]
+                    != row["baseline_capture_id"]
+                    or request_payload["current_capture_id"]
+                    != row["current_capture_id"]
+                ):
+                    raise ValueError("Stored capture IDs are inconsistent.")
+
+                # Validate the data and preserve the old identity.
+                EvaluationRecord(
+                    evaluation_id=row["evaluation_id"],
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                    baseline_capture_id=row["baseline_capture_id"],
+                    current_capture_id=row["current_capture_id"],
+                    agent_answer=AgentAnswer.model_validate(
+                        request_payload["agent_answer"]
+                    ),
+                    response=DriftEvaluationResponse.model_validate(
+                        response_payload
+                    ),
+                    evaluator_version="legacy",
+                )
+            except Exception as exc:
+                raise EvaluationIntegrityError(
+                    f"Legacy evaluation '{row['evaluation_id']}' "
+                    "contains invalid data; migration aborted."
+                ) from exc
+
+        connection.execute(
+            """
+            ALTER TABLE evaluations
+            ADD COLUMN evaluator_version TEXT NOT NULL DEFAULT 'legacy'
+            """
+        )
+
+        for row in rows:
+            new_hash = self._hash_fields(
+                evaluation_id=row["evaluation_id"],
+                created_at=row["created_at"],
+                baseline_capture_id=row["baseline_capture_id"],
+                current_capture_id=row["current_capture_id"],
+                request_json=row["request_json"],
+                response_json=row["response_json"],
+                evaluator_version="legacy",
+                schema_version=self.SCHEMA_VERSION,
+            )
+
+            connection.execute(
+                """
+                UPDATE evaluations
+                SET evaluator_version = ?,
+                    content_hash = ?,
+                    schema_version = ?
+                WHERE evaluation_id = ?
+                """,
+                (
+                    "legacy",
+                    new_hash,
+                    self.SCHEMA_VERSION,
+                    row["evaluation_id"],
+                ),
+            )
+
     def save(self, record: EvaluationRecord) -> EvaluationRecord:
-        """Save once; identical retries return the original record."""
+        """Save once; retries with identical inputs return the original."""
 
         if (
             record.created_at.tzinfo is None
@@ -144,7 +303,6 @@ class SQLiteEvaluationRepository:
         )
 
         created_at = normalized.created_at.isoformat()
-
         request_json = self._serialize_json(
             self._request_payload(normalized)
         )
@@ -159,6 +317,7 @@ class SQLiteEvaluationRepository:
             current_capture_id=normalized.current_capture_id,
             request_json=request_json,
             response_json=response_json,
+            evaluator_version=normalized.evaluator_version,
             schema_version=self.SCHEMA_VERSION,
         )
 
@@ -172,10 +331,11 @@ class SQLiteEvaluationRepository:
                     current_capture_id,
                     request_json,
                     response_json,
+                    evaluator_version,
                     content_hash,
                     schema_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(evaluation_id) DO NOTHING
                 """,
                 (
@@ -185,6 +345,7 @@ class SQLiteEvaluationRepository:
                     normalized.current_capture_id,
                     request_json,
                     response_json,
+                    normalized.evaluator_version,
                     content_hash,
                     self.SCHEMA_VERSION,
                 ),
@@ -209,12 +370,12 @@ class SQLiteEvaluationRepository:
 
         existing = self._deserialize_row(row)
 
-        # Ignore the new timestamp when deciding whether this is an
-        # identical retry. The original timestamp remains authoritative.
+        # The first successful result remains authoritative for these inputs.
         if (
             existing.baseline_capture_id == normalized.baseline_capture_id
             and existing.current_capture_id == normalized.current_capture_id
             and existing.agent_answer == normalized.agent_answer
+            and existing.evaluator_version == normalized.evaluator_version
         ):
             return existing
 
@@ -237,6 +398,7 @@ class SQLiteEvaluationRepository:
             current_capture_id=row["current_capture_id"],
             request_json=row["request_json"],
             response_json=row["response_json"],
+            evaluator_version=row["evaluator_version"],
             schema_version=row["schema_version"],
         )
 
@@ -269,6 +431,7 @@ class SQLiteEvaluationRepository:
                 response=DriftEvaluationResponse.model_validate(
                     response_payload
                 ),
+                evaluator_version=row["evaluator_version"],
             )
         except Exception as exc:
             raise EvaluationIntegrityError(

@@ -1,4 +1,4 @@
-﻿import json
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -393,6 +393,8 @@ def test_persisted_evaluation_is_saved_and_retrievable(
     history = history_response.json()
 
     assert history["evaluation_id"] == evaluation_id
+    assert evaluation_id.startswith("eval-v1-")
+    assert history["evaluator_version"] == "v1"
     assert history["baseline_capture_id"] == baseline.capture_id
     assert history["current_capture_id"] == current.capture_id
     assert history["agent_answer"]["answer_id"] == (

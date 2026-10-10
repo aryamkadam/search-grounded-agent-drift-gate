@@ -1,4 +1,5 @@
-﻿import json
+import hashlib
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -208,3 +209,190 @@ def test_same_inputs_keep_original_record_when_result_changes(
 
     assert saved == original
     assert repository.get(original.evaluation_id) == original
+
+def test_v1_database_migrates_to_legacy_evaluation_records(tmp_path):
+    database_path = tmp_path / "legacy-evaluations.sqlite3"
+    record = make_record()
+
+    created_at = record.created_at.isoformat()
+    request_json = SQLiteEvaluationRepository._serialize_json(
+        SQLiteEvaluationRepository._request_payload(record)
+    )
+    response_json = SQLiteEvaluationRepository._serialize_json(
+        SQLiteEvaluationRepository._response_payload(record)
+    )
+
+    # Reproduce the original schema-v1 hash format exactly.
+    hash_payload = {
+        "evaluation_id": record.evaluation_id,
+        "created_at": created_at,
+        "baseline_capture_id": record.baseline_capture_id,
+        "current_capture_id": record.current_capture_id,
+        "request_json": request_json,
+        "response_json": response_json,
+        "schema_version": 1,
+    }
+    serialized_hash_payload = json.dumps(
+        hash_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    content_hash = hashlib.sha256(
+        serialized_hash_payload.encode("utf-8")
+    ).hexdigest()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE evaluations (
+                evaluation_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                baseline_capture_id TEXT NOT NULL,
+                current_capture_id TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                schema_version INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO evaluations (
+                evaluation_id,
+                created_at,
+                baseline_capture_id,
+                current_capture_id,
+                request_json,
+                response_json,
+                content_hash,
+                schema_version
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.evaluation_id,
+                created_at,
+                record.baseline_capture_id,
+                record.current_capture_id,
+                request_json,
+                response_json,
+                content_hash,
+                1,
+            ),
+        )
+
+    # Opening a repository should migrate the legacy table safely.
+    migrated_repository = SQLiteEvaluationRepository(database_path)
+    migrated = migrated_repository.get(record.evaluation_id)
+
+    assert migrated is not None
+    assert migrated.evaluator_version == "legacy"
+    assert migrated.agent_answer == record.agent_answer
+    assert migrated.response == record.response
+    assert migrated.baseline_capture_id == record.baseline_capture_id
+    assert migrated.current_capture_id == record.current_capture_id
+
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(evaluations)"
+            ).fetchall()
+        }
+        schema_version = connection.execute(
+            "SELECT schema_version FROM evaluations WHERE evaluation_id = ?",
+            (record.evaluation_id,),
+        ).fetchone()[0]
+
+    assert "evaluator_version" in columns
+    assert schema_version == 2
+
+def test_v1_migration_rejects_corrupted_legacy_record(tmp_path):
+    database_path = tmp_path / "corrupted-legacy.sqlite3"
+    record = make_record()
+
+    created_at = record.created_at.isoformat()
+    request_json = SQLiteEvaluationRepository._serialize_json(
+        SQLiteEvaluationRepository._request_payload(record)
+    )
+    response_json = SQLiteEvaluationRepository._serialize_json(
+        SQLiteEvaluationRepository._response_payload(record)
+    )
+
+    # Use a valid old-schema hash, then corrupt the stored content.
+    hash_payload = {
+        "evaluation_id": record.evaluation_id,
+        "created_at": created_at,
+        "baseline_capture_id": record.baseline_capture_id,
+        "current_capture_id": record.current_capture_id,
+        "request_json": request_json,
+        "response_json": response_json,
+        "schema_version": 1,
+    }
+    content_hash = hashlib.sha256(
+        json.dumps(
+            hash_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE evaluations (
+                evaluation_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                baseline_capture_id TEXT NOT NULL,
+                current_capture_id TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                schema_version INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO evaluations VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.evaluation_id,
+                created_at,
+                record.baseline_capture_id,
+                record.current_capture_id,
+                request_json,
+                response_json,
+                content_hash,
+                1,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE evaluations
+            SET response_json = ?
+            WHERE evaluation_id = ?
+            """,
+            ('{"tampered":true}', record.evaluation_id),
+        )
+
+    with pytest.raises(EvaluationIntegrityError):
+        SQLiteEvaluationRepository(database_path)
+
+    # Failed migration must leave the old schema and version intact.
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(evaluations)"
+            ).fetchall()
+        }
+        schema_version = connection.execute(
+            "SELECT schema_version FROM evaluations"
+        ).fetchone()[0]
+
+    assert "evaluator_version" not in columns
+    assert schema_version == 1
