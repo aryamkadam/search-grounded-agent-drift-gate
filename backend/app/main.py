@@ -3,18 +3,19 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from .capture import create_capture
-from .claims import AgentAnswer
 from .capture_repository import (
     CaptureConflictError,
     CaptureIntegrityError,
     SQLiteCaptureRepository,
 )
+from .claims import AgentAnswer
 from .evaluation import (
     DriftEvaluationRequest,
     DriftEvaluationResponse,
@@ -27,7 +28,7 @@ from .evaluation_repository import (
     EvaluationRecord,
     SQLiteEvaluationRepository,
 )
-from .schema import Capture
+from .schema import Capture, NormalizedEvidence, SearchContext
 from .serpapi_client import SerpApiError, search_google
 
 
@@ -113,6 +114,18 @@ class CaptureListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class CaptureReplayResponse(BaseModel):
+    """Result of replaying a stored capture offline."""
+
+    replay_id: str
+    capture_id: str
+    status: Literal["completed"]
+    mode: Literal["offline"]
+    captured_at: datetime
+    search_context: SearchContext
+    normalized_evidence: NormalizedEvidence
 
 
 @lru_cache(maxsize=1)
@@ -266,6 +279,43 @@ def get_capture_endpoint(
         )
 
     return capture
+
+
+@app.post(
+    "/v1/captures/{capture_id}/replay",
+    response_model=CaptureReplayResponse,
+)
+def replay_capture_endpoint(
+    capture_id: str,
+    repository: SQLiteCaptureRepository = Depends(
+        get_capture_repository
+    ),
+) -> CaptureReplayResponse:
+    """Replay a stored evidence snapshot without performing a search."""
+
+    try:
+        capture = repository.get(capture_id)
+    except CaptureIntegrityError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Stored capture integrity verification failed.",
+        ) from exc
+
+    if capture is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Capture not found.",
+        )
+
+    return CaptureReplayResponse(
+        replay_id=str(uuid4()),
+        capture_id=capture.capture_id,
+        status="completed",
+        mode="offline",
+        captured_at=capture.captured_at,
+        search_context=capture.search_context,
+        normalized_evidence=capture.normalized_evidence,
+    )
 
 
 @app.post(

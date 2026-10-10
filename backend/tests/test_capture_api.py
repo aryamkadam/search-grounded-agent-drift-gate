@@ -696,3 +696,51 @@ def test_vite_origins_are_allowed_by_cors(origin):
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin
     assert "GET" in response.headers["access-control-allow-methods"]
+def test_replay_capture_returns_stored_snapshot_without_search(
+    monkeypatch,
+    api_repository,
+):
+    capture = create_capture(
+        sample_search_response("offline replay test"),
+        capture_id="offline-replay-capture",
+    )
+    api_repository.save(capture)
+
+    def fail_if_search_called(**kwargs):
+        raise AssertionError("Replay must not call SerpApi")
+
+    monkeypatch.setattr(
+        "backend.app.main.search_google",
+        fail_if_search_called,
+    )
+
+    response = client.post(
+        f"/v1/captures/{capture.capture_id}/replay"
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["replay_id"]
+    assert body["capture_id"] == capture.capture_id
+    assert body["status"] == "completed"
+    assert body["mode"] == "offline"
+    assert body["captured_at"] == (
+        capture.captured_at.isoformat().replace("+00:00", "Z")
+    )
+    assert body["search_context"]["query"] == "offline replay test"
+    assert body["normalized_evidence"] == (
+        capture.normalized_evidence.model_dump(mode="json")
+    )
+
+
+def test_replay_capture_returns_404_for_unknown_capture(
+    api_repository,
+):
+    response = client.post(
+        "/v1/captures/does-not-exist/replay"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Capture not found."
