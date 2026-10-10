@@ -201,3 +201,138 @@ def test_storage_conflict_returns_controlled_error(
     assert response.json()["detail"] == (
         "Capture ID conflicts with existing stored content."
     )
+
+def persisted_answer_payload(
+    identity_key="url:https://example.com/quantum",
+):
+    return {
+        "answer_id": "answer-persisted-1",
+        "text": "Quantum computing is discussed by the source.",
+        "claims": [
+            {
+                "claim_id": "claim-persisted-1",
+                "text": "The source discusses quantum computing.",
+                "evidence_refs": [
+                    {
+                        "surface": "organic_results",
+                        "identity_key": identity_key,
+                        "relation": "supports",
+                    }
+                ],
+                "importance": "important",
+                "confidence": 0.9,
+            }
+        ],
+    }
+
+
+def test_persisted_evaluation_uses_stored_captures(
+    api_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="baseline-persisted",
+    )
+    current = create_capture(
+        sample_search_response(),
+        capture_id="current-persisted",
+    )
+
+    api_repository.save(baseline)
+    api_repository.save(current)
+
+    response = client.post(
+        "/v1/evaluations/persisted",
+        json={
+            "baseline_capture_id": baseline.capture_id,
+            "current_capture_id": current.capture_id,
+            "agent_answer": persisted_answer_payload(),
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["baseline_capture_id"] == baseline.capture_id
+    assert body["current_capture_id"] == current.capture_id
+    assert body["validation"]["valid"] is True
+    assert body["validation"]["unresolved_claim_links"] == []
+    assert body["result"] is not None
+
+
+def test_persisted_evaluation_returns_404_for_missing_baseline(
+    api_repository,
+):
+    current = create_capture(
+        sample_search_response(),
+        capture_id="current-existing",
+    )
+    api_repository.save(current)
+
+    response = client.post(
+        "/v1/evaluations/persisted",
+        json={
+            "baseline_capture_id": "missing-baseline",
+            "current_capture_id": current.capture_id,
+            "agent_answer": persisted_answer_payload(),
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Baseline capture not found."
+
+
+def test_persisted_evaluation_returns_404_for_missing_current(
+    api_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="baseline-existing",
+    )
+    api_repository.save(baseline)
+
+    response = client.post(
+        "/v1/evaluations/persisted",
+        json={
+            "baseline_capture_id": baseline.capture_id,
+            "current_capture_id": "missing-current",
+            "agent_answer": persisted_answer_payload(),
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Current capture not found."
+
+
+def test_persisted_evaluation_rejects_unresolved_evidence_links(
+    api_repository,
+):
+    baseline = create_capture(
+        sample_search_response(),
+        capture_id="baseline-invalid-link",
+    )
+    current = create_capture(
+        sample_search_response(),
+        capture_id="current-invalid-link",
+    )
+
+    api_repository.save(baseline)
+    api_repository.save(current)
+
+    response = client.post(
+        "/v1/evaluations/persisted",
+        json={
+            "baseline_capture_id": baseline.capture_id,
+            "current_capture_id": current.capture_id,
+            "agent_answer": persisted_answer_payload(
+                identity_key="url:https://example.com/not-in-baseline",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["validation"]["valid"] is False
+    assert body["validation"]["unresolved_claim_links"]
+    assert body["result"] is None

@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from .capture import create_capture
+from .claims import AgentAnswer
 from .capture_repository import (
     CaptureConflictError,
     CaptureIntegrityError,
@@ -30,6 +31,19 @@ app = FastAPI(
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DATABASE_PATH = BACKEND_DIR / "data" / "captures.sqlite3"
+
+
+class PersistedEvaluationRequest(BaseModel):
+    """Request to evaluate drift using stored capture IDs."""
+
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+        extra="forbid",
+    )
+
+    baseline_capture_id: str = Field(min_length=1, max_length=200)
+    current_capture_id: str = Field(min_length=1, max_length=200)
+    agent_answer: AgentAnswer
 
 
 class CaptureCreateRequest(BaseModel):
@@ -156,6 +170,53 @@ def get_capture_endpoint(
         )
 
     return capture
+
+
+@app.post(
+    "/v1/evaluations/persisted",
+    response_model=DriftEvaluationResponse,
+)
+def create_persisted_evaluation(
+    request: PersistedEvaluationRequest,
+    repository: SQLiteCaptureRepository = Depends(get_capture_repository),
+) -> DriftEvaluationResponse:
+    """Evaluate drift using two previously stored captures."""
+
+    try:
+        baseline_capture = repository.get(request.baseline_capture_id)
+    except CaptureIntegrityError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Stored capture integrity verification failed.",
+        ) from exc
+
+    if baseline_capture is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Baseline capture not found.",
+        )
+
+    try:
+        current_capture = repository.get(request.current_capture_id)
+    except CaptureIntegrityError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Stored capture integrity verification failed.",
+        ) from exc
+
+    if current_capture is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Current capture not found.",
+        )
+
+    evaluation_request = DriftEvaluationRequest(
+        baseline_capture=baseline_capture,
+        current_capture=current_capture,
+        agent_answer=request.agent_answer,
+    )
+
+    return evaluate_capture_drift(evaluation_request)
 
 
 @app.post(
