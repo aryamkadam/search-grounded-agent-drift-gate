@@ -226,6 +226,10 @@ export function CompareWorkspace({
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const [claimText, setClaimText] = useState("");
+  const [answerRevision, setAnswerRevision] = useState(() => ({
+  fingerprint: "",
+  answerId: "",
+}));
 
   const [evaluating, setEvaluating] = useState(false);
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
@@ -448,29 +452,50 @@ export function CompareWorkspace({
     setHistoryError(null);
 
     try {
-      const requestBody = {
-        baseline_capture_id: baseline.capture_id,
-        current_capture_id: current.capture_id,
-        agent_answer: {
-          answer_id: `frontend-claim-${baseline.capture_id}-${current.capture_id}`,
-          text: claimText.trim(),
-          claims: [
-            {
-              claim_id: "claim-1",
-              text: claimText.trim(),
-              evidence_refs: [
-                {
-                  surface: selectedEvidence.surface,
-                  identity_key: selectedEvidence.identity_key,
-                  relation: "supports",
-                },
-              ],
-              importance: "important",
-              confidence: 0.9,
-            },
-          ],
-        },
-      };
+      const claim = claimText.trim();
+
+const revisionFingerprint = JSON.stringify({
+  baselineCaptureId: baseline.capture_id,
+  currentCaptureId: current.capture_id,
+  claim,
+  evidenceSurface: selectedEvidence.surface,
+  evidenceIdentityKey: selectedEvidence.identity_key,
+});
+
+const answerId =
+  answerRevision.fingerprint === revisionFingerprint &&
+  answerRevision.answerId
+    ? answerRevision.answerId
+    : crypto.randomUUID();
+
+setAnswerRevision({
+  fingerprint: revisionFingerprint,
+  answerId,
+});
+
+const requestBody = {
+  baseline_capture_id: baseline.capture_id,
+  current_capture_id: current.capture_id,
+  agent_answer: {
+    answer_id: answerId,
+    text: claim,
+    claims: [
+      {
+        claim_id: "claim-1",
+        text: claim,
+        evidence_refs: [
+          {
+            surface: selectedEvidence.surface,
+            identity_key: selectedEvidence.identity_key,
+            relation: "supports",
+          },
+        ],
+        importance: "important",
+        confidence: 0.9,
+      },
+    ],
+  },
+};
 
       const response = await fetch(
         `${baseUrl}/v1/evaluations/persisted`,
