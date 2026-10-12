@@ -436,7 +436,7 @@ const location =
         <p className="mt-3 max-w-3xl text-sm leading-6 text-zinc-500">
           Stored search context and normalized evidence retrieved from the
           backend. This page displays the data returned for this capture;
-          offline agent replay is not yet implemented.
+          Replay is available using the evidence snapshot saved with this capture.
         </p>
       </section>
 

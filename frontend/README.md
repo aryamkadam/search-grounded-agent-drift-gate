@@ -1,36 +1,80 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+﻿# Search-Grounded AI Agent Drift Gate - Frontend
 
-## Getting Started
+## Overview
 
-First, run the development server:
+The frontend lets users inspect captured search evidence, compare baseline and current captures, and review offline replay results.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Requirements
+
+- Node.js and npm
+- A running, reachable backend API
+- Accessible capture data for comparison and replay
+
+## Setup
+
+From the repository root, run:
+
+```powershell
+cd frontend
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Create or update `frontend/.env.local` with the backend API URL:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```env
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Replace the example URL with the actual reachable backend address. If the backend runs on another laptop, use its LAN IP address and port. The backend must allow connections from the frontend machine.
 
-## Learn More
+Restart the development server after changing `.env.local`.
 
-To learn more about Next.js, take a look at the following resources:
+Keep `SERPAPI_KEY` and other private credentials on the backend. Never expose them in frontend code.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Run locally
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+From the `frontend` directory, run:
 
-## Deploy on Vercel
+```powershell
+npm run dev
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Open http://localhost:3000.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Main pages
+
+- `/` - Dashboard
+- `/captures` - Capture history
+- `/captures/[id]` - Capture details and saved evidence
+- `/compare` - Compare captures and persist evaluations
+- `/replay` - Offline replay workflow
+
+Results depend on the configured backend API and its stored data.
+
+## Validation
+
+From the `frontend` directory, run:
+
+```powershell
+npm run lint
+npm run build
+```
+
+Both commands should complete successfully before handoff.
+
+## Backend integration checklist
+
+Verify these behaviors against the intended backend:
+
+1. Identical persisted-evaluation retries return the existing evaluation without creating a duplicate.
+2. An edited claim or evidence selection uses a new answer revision ID and creates a distinct evaluation.
+3. API errors are displayed clearly.
+4. Capture details and offline replay work with the integrated backend.
+
+Do not delete existing persisted evaluation records during testing.
+
+## Environment and security
+
+- Do not commit `.env.local`.
+- `NEXT_PUBLIC_API_URL` is public client-side configuration, not a secret.
+- Search provider API keys must remain on the backend.
